@@ -38,13 +38,16 @@ def build_temporal_cost_scaled(q_token_idx, Lq, Lk, device, dtype, latent_frames
 
 
 def create_mask_fn(q_token_idx, fallback_tokens_per_frame, latent_frames):
-    """Closure: mask_fn(q, k, transformer_options) -> additive mask or None."""
+    """Closure: mask_fn(Lq, Lk, dtype, device, transformer_options) -> additive mask or None.
+
+    Takes shapes/dtype/device instead of tensors so callers can compute the mask
+    without first materializing q/k projections — required so PromptRelay can
+    wrap an existing cross-attn forward (e.g. KJNodes NAG) instead of replacing it.
+    """
     cache = {}
     max_token_idx = max(int(seg["local_token_idx"].max().item()) for seg in q_token_idx) + 1
 
-    def mask_fn(q, k, transformer_options):
-        Lq, Lk = q.shape[1], k.shape[1]
-
+    def mask_fn(Lq, Lk, dtype, device, transformer_options):
         if Lq == Lk:
             return None
 
@@ -63,19 +66,19 @@ def create_mask_fn(q_token_idx, fallback_tokens_per_frame, latent_frames):
 
         mode = "video" if Lq == video_lq else "scaled"
 
-        key = (Lq, Lk, mode, q.device)
+        key = (Lq, Lk, mode, device)
         if key not in cache:
             if mode == "video":
-                cost = build_temporal_cost(q_token_idx, Lq, Lk, q.device, q.dtype, video_tpf)
+                cost = build_temporal_cost(q_token_idx, Lq, Lk, device, dtype, video_tpf)
             else:
-                cost = build_temporal_cost_scaled(q_token_idx, Lq, Lk, q.device, q.dtype, latent_frames)
+                cost = build_temporal_cost_scaled(q_token_idx, Lq, Lk, device, dtype, latent_frames)
             log.info(
                 "[PromptRelay] Built penalty matrix (%s): Lq=%d, Lk=%d, nonzero=%d/%d",
                 mode, Lq, Lk, (cost > 0).sum().item(), cost.numel(),
             )
             cache[key] = -cost
 
-        return cache[key].to(q.dtype)
+        return cache[key].to(dtype)
 
     return mask_fn
 
